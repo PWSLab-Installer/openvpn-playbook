@@ -1,0 +1,144 @@
+- hosts: localhost
+  connection: local
+  vars:
+    # EasyRSA
+    easyrsa_generate_dh: true
+    easyrsa_servers:
+      - name: server
+    easyrsa_clients:
+      - name: client1
+      - name: client2
+    easyrsa_pki_dir: /etc/easyrsa/pki
+
+    # OpenVPN
+    openvpn_keydir: "{{ easyrsa_pki_dir }}"
+    openvpn_clients: "{{ easyrsa_clients | map(attribute='name') | list }}"
+    openvpn_download_dir: /tmp/
+    openvpn_ccd_configs:
+      - name: client1
+        content: '# pass'
+      - name: client2
+        content: '# pass'
+
+    ## scripting
+    openvpn_script_output_directories:
+      - /var/log/openvpn-script-out/
+
+    openvpn_script_files:
+      - scripts/client-disconnect.sh.j2
+
+    openvpn_inline_scripts:
+      - name: my-up-script.sh
+        content: |
+          #!/usr/bin/env
+          echo 'Up!' >> "/var/up.log"
+    # Enabled them
+    openvpn_download_clients: false
+    openvpn_open_firewall: false
+    openvpn_route_traffic: false
+    openvpn_unified_client_profiles: false
+    openvpn_management_enable: false
+    openvpn_client_to_client_via_ip: false
+    
+  tasks:
+
+    - name: Check the version of CentOS
+      command: hostnamectl
+      register: os_check
+      ignore_errors: yes
+
+    - name: Install Role EasyRSA
+      local_action: command ansible-galaxy install -f nkakouros.easyrsa
+
+    - command: rm -rf /root/.ansible/roles/pwslab.openvpn
+
+    - name: Install Role OpenVPN
+      command: git clone https://github.com/Stouts/Stouts.openvpn.git /root/.ansible/roles/pwslab.openvpn
+
+    - name: Applying role EasyRSA
+      command: mv ~/.ansible/roles/nkakouros.easyrsa ~/.ansible/roles/pwslab.easyrsa
+      ignore_errors: yes
+
+    - name: Applying replacement on CentOS
+      lineinfile:
+          dest: /root/.ansible/roles/pwslab.openvpn/tasks/system/bridge/RedHat.yml
+          regexp: '^  notify'
+          line: '#  notify'
+          state: present
+      when:
+        - os_check.stdout | regex_search("CentOS")
+
+    - name: Installing EasyRSA
+      include_role:
+        name: pwslab.easyrsa
+
+    - block:
+        - name: Installing OpenVPN
+          include_role:
+            name: pwslab.openvpn
+      ignore_errors: yes
+      when:
+        - os_check.stdout | regex_search("CentOS Linux 8")
+
+    - name: Installing OpenVPN
+      include_role:
+        name: pwslab.openvpn
+      when:
+        - not os_check.stdout | regex_search("CentOS Linux 8")
+
+    -   name: Initiating OpenVPN Acess
+        apt:
+            name: "{{ item }}"
+            update_cache: yes
+            state: present
+        loop:
+            - ca-certificates 
+            - wget 
+            - net-tools 
+            - gnupg   
+        when:
+            - os_check.stdout | regex_search("Ubuntu")
+
+    -   name: Add openvpn access key
+        shell: wget -qO - https://as-repository.openvpn.net/as-repo-public.gpg | apt-key add -
+        when:
+            - os_check.stdout | regex_search("Ubuntu")
+
+    -   name: Add repo
+        shell: echo "deb http://as-repository.openvpn.net/as/debian bionic main">/etc/apt/sources.list.d/openvpn-as-repo.list
+        when:
+            - os_check.stdout | regex_search("Ubuntu 18")
+    
+    -   name: Add repo
+        shell: echo "deb http://as-repository.openvpn.net/as/debian focal main">/etc/apt/sources.list.d/openvpn-as-repo.list
+        when:
+            - os_check.stdout | regex_search("Ubuntu 20")
+
+    -   name: Install OpenVPN Acess - Ubuntu
+        apt:
+            name: openvpn-as
+            update_cache: yes
+            state: present  
+        when:
+            - os_check.stdout | regex_search("Ubuntu")
+
+    -   name: Add Repo - CentOS 7
+        yum:
+            name: https://as-repository.openvpn.net/as-repo-centos7.rpm
+            state: present
+        when:
+            - os_check.stdout | regex_search("CentOS Linux 7")
+    
+    -   name: Add Repo - CentOS 8
+        yum:
+            name: https://as-repository.openvpn.net/as-repo-centos8.rpm
+            state: present
+        when:
+            - os_check.stdout | regex_search("CentOS Linux 8")
+
+    -   name: Install OpenVPN Acess - CentOS
+        yum:
+            name: openvpn-as
+            state: present
+        when:
+            - os_check.stdout | regex_search("CentOS")
